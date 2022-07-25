@@ -1,0 +1,129 @@
+#Loading Libraries 
+
+
+library(corrplot)
+library(dplyr)
+library(ggplot2)
+library(rpart)
+library(rpart.plot)
+library(caTools)
+library(parsnip)
+library(tidymodels)
+library(caret)
+library(tidyverse)
+library(xgboost)
+library(class)
+
+
+#Loading the dataset 
+
+df <- read.csv("/Users/prathamdave/Desktop/dataset.csv")
+
+#Inspecting the dataset 
+
+str(df)
+
+#Preliminary data processing 
+
+df = df %>% mutate(across(.cols=where(is.integer), .fns=as.numeric))
+df_numeric = df[,1:11]
+df_categorical = as.factor(df[,12])
+
+df <- df %>%
+  mutate(label_factor = as.factor(label))
+
+df$label <- NULL
+
+#Data Visualization 
+
+corrplot(cor(df_numeric))
+
+
+barplot(table(df_categorical), main = "Types of Crop Reccomendation", xlab = "Crop Reccomended", ylab = "Count", col = "blue", density = 10)
+
+#Splitting The Data
+
+set.seed(1)
+sample <- sample.split(df$label, SplitRatio = 0.7)
+train  <- subset(df, sample == TRUE)
+test   <- subset(df, sample == FALSE)
+
+#Model 1 - Tuned Gradient Boosted Decision Tree
+
+boost_spec <- boost_tree(
+  trees = 500,
+  learn_rate = tune(),
+  tree_depth = tune(),
+  sample_size = tune()) %>%
+  set_mode("classification") %>%
+  set_engine("xgboost")
+
+tunegrid_boost <- grid_regular(hardhat::extract_parameter_set_dials(boost_spec), 
+                               levels = 3)
+
+folds <- vfold_cv(train, v = 6)
+
+tune_results <- tune_grid(boost_spec,
+                          label_factor ~ .,
+                          resamples = folds,
+                          grid = tunegrid_boost,
+                          metrics = metric_set(roc_auc))
+
+autoplot(tune_results)
+
+best_params <- select_best(tune_results)
+
+best_params
+
+#Applying the optimized hyperparameters 
+
+boosted_spec <- boost_tree(
+  trees = 500,
+  learn_rate = 0.316,
+  tree_depth = 8,
+  sample_size = 1) %>%
+  set_mode("classification") %>%
+  set_engine("xgboost")
+
+
+boosted_model <- fit(boosted_spec,
+                     label_factor ~.,
+                     train)
+
+#Visualizing the gradient boosted tree
+
+#Accuracy of the  gradient boosted tree model 
+
+boosted_tree_predicitions <- as.numeric(unlist(predict(boosted_model, test, type = "class")))
+mean(boosted_tree_predicitions == test$label_factor)
+
+#The gradient boosted tree model has an accuracy of 98.3%
+
+
+#Model 2 - Pruned Decision Tree
+
+decision_tree_model <- rpart(label_factor ~., data = train, method = "class", control = rpart.control(cp = 0))
+plotcp(decision_tree_model)
+
+#We observe that thw X-val Relative Error is minimized when the complexity parameter is equivalent to approximately zero, so no pruning is needed
+
+#Visualizing the decision tree 
+
+rpart.plot(decision_tree_model)
+
+#Evaluating Decision Tree
+
+decision_tree_model_predictions <- predict(decision_tree_model, test, type = "class")
+mean(decision_tree_model_predictions == test$label_factor)
+
+#The decision tree model has an accuracy of 98.9% 
+
+#Model 3 - k-Nearest Neighbot
+
+label_types <- train$label_factor
+
+knn_model <- knn(train = train[-12], test = test[-12], cl = label_types)
+
+mean(knn_model == test$label_factor)
+
+#The kNN model has an accuracy of 92.9%
